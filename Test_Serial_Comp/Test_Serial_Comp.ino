@@ -5,9 +5,6 @@
 #include<Arduino_FreeRTOS.h>
 #include<task.h>
 #define STACK_SIZE 500
-#include<stdio.h>
-#include<stdlib.h>
-
 #define DEVICE_A_ACCEL (0x53)    //first ADXL345 device address
 #define DEVICE_B_ACCEL (0x1D)    //second ADXL345 device address
 #define DEVICE_C_GYRO (0x68) // MPU6050 address
@@ -53,7 +50,6 @@ int16_t xg_offset, yg_offset, zg_offset;
 
 //Structure of data packet
 typedef struct Packet {
-  float num;
   float gyro[3];
   float acc1[3];
   float acc2[3];
@@ -64,6 +60,7 @@ typedef struct Packet {
 } Packet;   
 
 Packet packet;
+char databuf[1000];
 
 char* acc1_x;
 char* acc1_y;
@@ -79,20 +76,25 @@ char* current_c;
 char* power_c;
 char* energy_c;
 
-char databuf[1000];
 
 /**
  * Main Task
  */
 void mainTask(void *p) {
 TickType_t xLastWakeTime = xTaskGetTickCount();
+
+while(1){
+   xLastWakeTime = xTaskGetTickCount();
 for (int i=0;i <PKT_SIZE; i++) {
   getData(); 
   changeFormat(i);
-  strcat(databuf, ",");
-  vTaskDelayUntil(&xLastWakeTime, (20U/ portTICK_PERIOD_MS));
+  vTaskDelayUntil(&xLastWakeTime, (20/ portTICK_PERIOD_MS));
 }
+
+
 sendToPi();
+}
+
 }
 
 
@@ -103,9 +105,8 @@ sendToPi();
  * A sample of 20 packets will be sent to Rpi every 200ms
  */
  void sendToPi() {
-      strcat(databuf, "\r");
-      Serial.println();
-      Serial.println(sizeof(databuf));
+      
+      Serial.println("sending");
       strcpy(databuf, "");
 }
 
@@ -234,7 +235,8 @@ void handshake() {
 void changeFormat(int num){
 char charbuf[64] ;
 
-
+  Serial.print(num);
+  Serial.println();
   acc1_x = dtostrf( packet.acc1[0],3,2,charbuf);
   strcat(databuf, acc1_x); 
   strcat(databuf, ",");
@@ -276,14 +278,14 @@ char charbuf[64] ;
   strcat(databuf, ","); 
   energy_c = dtostrf( packet.energy,3,2,charbuf);
   strcat(databuf, energy_c  );
+  strcat(databuf, "\r");
 
 
-
+   //For checking purpose
   int len = strlen(databuf);
         for (int i = 0; i < len; i++) 
     Serial.print(databuf[i]);
- 
-     Serial.println();
+    Serial.println();
  
 }
 void setup()
