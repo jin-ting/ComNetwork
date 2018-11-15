@@ -1,9 +1,11 @@
+#include <power.h>
 #include <MPU6050.h>
 #include <I2Cdev.h>
 #include <ADXL345.h>
 #include <Wire.h>
-#include<Arduino_FreeRTOS.h>
-#include<task.h>
+#include <Arduino_FreeRTOS.h>
+#include <task.h>
+
 #define STACK_SIZE 500
 #define DEVICE_A_ACCEL (0x53)    //first ADXL345 device address
 #define DEVICE_B_ACCEL (0x1D)    //second ADXL345 device address
@@ -13,11 +15,12 @@
 #define currentSensorPin 1
 #define RS 0.1
 #define RL 10000
-#define PKT_SIZE 20
+#define PKT_SIZE 2
 
 ADXL345 sensorA = ADXL345(DEVICE_A_ACCEL);
 ADXL345 sensorB = ADXL345(DEVICE_B_ACCEL);
 MPU6050 sensorC = MPU6050(DEVICE_C_GYRO);
+TickType_t xLastWakeTime;
 
 //determining scale factor based on range set
 //Since range in +-2g, range is 4mg/LSB.
@@ -39,14 +42,6 @@ float vOut , voltageReading, currentReading;
 //16 bit integer values for raw data of accelerometers
 int16_t xa_raw, ya_raw, za_raw, xb_raw, yb_raw, zb_raw;
 
-//16 bit integer values for offset data of accelerometers
-int16_t xa_offset, ya_offset, za_offset, xb_offset, yb_offset, zb_offset;
-
-//16 bit integer values for gyroscope readings
-int16_t xg_raw, yg_raw, zg_raw;
-
-//16 bit integer values for offset data of gyroscope
-int16_t xg_offset, yg_offset, zg_offset;
 
 //Structure of data packet
 typedef struct Packet {
@@ -59,8 +54,15 @@ typedef struct Packet {
   float energy;
 } Packet;   
 
+//16 bit integer values for gyroscope readings
+int16_t xg_raw, yg_raw, zg_raw;
 Packet packet;
-char databuf[1000];
+
+
+char databuf[2800];
+char checksum_c[40];
+int checkSum;
+int F_checkSum;
 
 char* acc1_x;
 char* acc1_y;
@@ -76,45 +78,64 @@ char* current_c;
 char* power_c;
 char* energy_c;
 
+int ledflag = HIGH;
+int countLED = 0;
 
+  int h_flag = 0;
+  int n_flag = 0;
+
+int i;
+  
 /**
  * Main Task
  */
 void mainTask(void *p) {
-TickType_t xLastWakeTime = xTaskGetTickCount();
+  
+  while(1){
+    xLastWakeTime = xTaskGetTickCount();
+    for (i=0;i <PKT_SIZE; i++) {
+    getData(); 
+    changeFormat();
+    vTaskDelayUntil(&xLastWakeTime, (20/ portTICK_PERIOD_MS));
+    }
 
-while(1){
-   xLastWakeTime = xTaskGetTickCount();
-for (int i=0;i <PKT_SIZE; i++) {
-  getData(); 
-  changeFormat(i);
-  vTaskDelayUntil(&xLastWakeTime, (20/ portTICK_PERIOD_MS));
+   
+    for (i=0; i < strlen(databuf) ; i++){
+    checkSum += int(databuf[i]);
+    }
+     Serial.print(checkSum);
+     Serial.print("---");
+     Serial.println();
+
+//     F_checkSum = (int)checkSum;
+//     Serial.print(F_checkSum);
+//     Serial.println();
+
+  itoa(checkSum, checksum_c, 10); 
+  strcat(databuf, checksum_c);
+  Serial.print(checksum_c);
+  strcat(databuf, "\r");
+
+    Serial.print("Entering");
+   for (i = 0; i < strlen(databuf); i++) {
+   Serial1.write(databuf[i]);
+   //Serial.print(databuf[i]);
+   }
+   Serial.println();
+
+     strcpy(databuf, "");
+     checkSum =0;
+     
+  }
 }
 
 
-sendToPi();
-}
-
-}
-
-
-
-/** 
- *To send to Pi once Pi is ready for communication
- *Packet is of Type float (4 bytes) 
- * A sample of 20 packets will be sent to Rpi every 200ms
- */
- void sendToPi() {
-      
-      Serial.println("sending");
-      strcpy(databuf, "");
-}
 
  /**
  *  To collect readings from all the sensor and package into one packet every 20ms
  */
 void getData(){
-
+     
       // Read values from different sensors
       getScaledReadings();
     
@@ -126,18 +147,17 @@ void getData(){
       //Measure voltage out from current sensor to calculate current
       vOut = analogRead(currentSensorPin);
       vOut = remapVoltage(vOut);
-      packet.current = (vOut * 1000) / (RS * RL) * 1000;
+      packet.current = ((vOut * 1000) / (RS * RL));
 
       //Power is in mW due to current being in mA
       packet.power = packet.current * packet.voltage;
 
       static long prevTime = 0;
-      float secondsPassed = (millis()-prevTime) / (1000.0);
-
       static float energy = 0;
+      
       //Power / 1000.0 because converting mW to W
       //This allows joules to  be in W per seconds
-      energy += secondsPassed * (packet.power /1000.0);
+      energy += ((millis()-prevTime) / (1000.0)) * packet.power;
 
       prevTime = millis();
 
@@ -148,9 +168,7 @@ void getData(){
  * Data processing
  */
 float remapVoltage(int volt) {
-  float analogToDigital;
-  analogToDigital = (5.0/1023) * volt;  
-  return analogToDigital;
+  return (5.0/1023) * volt;
 }
 
 
@@ -159,70 +177,43 @@ float remapVoltage(int volt) {
  */
 void getScaledReadings() {
   sensorA.getAcceleration(&xa_raw, &ya_raw, &za_raw);
-  packet.acc1[0] = (xa_raw + xa_offset)*scaleFactorAccel;
-  packet.acc1[1] = (ya_raw + ya_offset)*scaleFactorAccel;
-  packet.acc1[2] = (za_raw + za_offset)*scaleFactorAccel;
+  packet.acc1[0] = (xa_raw)*scaleFactorAccel;
+  packet.acc1[1] = (ya_raw)*scaleFactorAccel;
+  packet.acc1[2] = (za_raw)*scaleFactorAccel;
   
   sensorB.getAcceleration(&xb_raw, &yb_raw, &zb_raw);
-  packet.acc2[0] = (xb_raw + xb_offset)*scaleFactorAccel;
-  packet.acc2[1] = (yb_raw + yb_offset)*scaleFactorAccel;
-  packet.acc2[2] = (zb_raw + zb_offset)*scaleFactorAccel;
+  packet.acc2[0] = (xb_raw)*scaleFactorAccel;
+  packet.acc2[1] = (yb_raw)*scaleFactorAccel;
+  packet.acc2[2] = (zb_raw)*scaleFactorAccel;
   
   sensorC.getRotation(&xg_raw, &yg_raw, &zg_raw);
-  packet.gyro[0] = (xg_raw + xg_offset)*scaleFactorGyro;
-  packet.gyro[1]= (yg_raw + yg_offset)*scaleFactorGyro;
-  packet.gyro[2] = (zg_raw + zg_offset)*scaleFactorGyro;
+  packet.gyro[0] = (xg_raw)*scaleFactorGyro;
+  packet.gyro[1]= (yg_raw)*scaleFactorGyro;
+  packet.gyro[2] = (zg_raw)*scaleFactorGyro;
  }
-
-
-/*
- * Purpose of adding 255 is to account for downward default acceleration in Z axis to be 1g
- */
-void calibrateSensors() {
-  //Setting range of ADXL345
-  sensorA.setRange(ADXL345_RANGE_2G);
-  sensorB.setRange(ADXL345_RANGE_2G);
-  
-  sensorA.getAcceleration(&xa_raw, &ya_raw, &za_raw);
-  sensorB.getAcceleration(&xb_raw, &yb_raw, &zb_raw);
-  sensorC.getRotation(&xg_raw, &yg_raw, &zg_raw);
-  
-  xa_offset = -xa_raw;
-  ya_offset = -ya_raw;
-  za_offset = -za_raw+255;
-
-  xb_offset = -xb_raw;
-  yb_offset = -yb_raw;
-  zb_offset = -zb_raw+255;
-
-  xg_offset = -xg_raw;
-  yg_offset = -yg_raw;
-  zg_offset = -zg_raw;
-}
-
 
 /**
  *  To perform handshake to ensure that communication between Rpi and Aduino is ready
  */
 void handshake() {
-  int h_flag = 0;
-  int n_flag = 0;
-
-
+   
   while (h_flag == 0) {
     if (Serial1.available()) {
       if ((Serial1.read() == 'H')) {
         h_flag = 1;
+        Serial1.write('A');
       }
     }
   }
 
   while (n_flag == 0) {
     if (Serial1.available()) {
-      Serial1.write('A');
       if (Serial1.read() == 'N') {
         Serial.println("Handshake done");
         n_flag = 1;
+      }
+      else {
+        Serial1.write('A');
       }
     }
   }
@@ -232,11 +223,10 @@ void handshake() {
 /** 
  Change the format of the data from float to string
  */
-void changeFormat(int num){
+void changeFormat(){
 char charbuf[64] ;
 
-  Serial.print(num);
-  Serial.println();
+  
   acc1_x = dtostrf( packet.acc1[0],3,2,charbuf);
   strcat(databuf, acc1_x); 
   strcat(databuf, ",");
@@ -278,22 +268,70 @@ char charbuf[64] ;
   strcat(databuf, ","); 
   energy_c = dtostrf( packet.energy,3,2,charbuf);
   strcat(databuf, energy_c  );
-  strcat(databuf, "\r");
-
-
-   //For checking purpose
-  int len = strlen(databuf);
-        for (int i = 0; i < len; i++) 
-    Serial.print(databuf[i]);
-    Serial.println();
- 
+ strcat(databuf, "\r");
 }
+
+void powerSavings() {
+  // Initializing all analog pins that are not used to output pins
+  // Turning the useless analog pins to digital pins and setting them to LOW
+  // This should save a total of 5ma
+  pinMode(A2, OUTPUT);
+  pinMode(A3, OUTPUT);
+  pinMode(A4, OUTPUT);
+  pinMode(A5, OUTPUT);
+  pinMode(A6, OUTPUT);
+  pinMode(A7, OUTPUT);
+  pinMode(A8, OUTPUT);
+  pinMode(A9, OUTPUT);
+  pinMode(A10, OUTPUT);
+  pinMode(A11, OUTPUT);
+  pinMode(A12, OUTPUT);
+  pinMode(A13, OUTPUT);
+  pinMode(A14, OUTPUT);
+  pinMode(A15, OUTPUT);
+
+  digitalWrite(A2, LOW);
+  digitalWrite(A3, LOW);
+  digitalWrite(A4, LOW);
+  digitalWrite(A5, LOW);
+  digitalWrite(A6, LOW);
+  digitalWrite(A7, LOW);
+  digitalWrite(A8, LOW);
+  digitalWrite(A9, LOW);
+  digitalWrite(A10, LOW);
+  digitalWrite(A11, LOW);
+  digitalWrite(A12, LOW);
+  digitalWrite(A13, LOW);
+  digitalWrite(A14, LOW);
+  digitalWrite(A15, LOW);
+
+  // Changing all the rest of the digital pins that are not used to OUTPUT LOW
+  // This should save ~9mA
+  for(i = 0; i <=16; i++) {
+    pinMode(i, OUTPUT);
+    digitalWrite(i, LOW);
+  }
+  for(i = 22; i <=53; i++) {  
+    pinMode(i, OUTPUT);
+    digitalWrite(i, LOW);
+  }
+
+  // Turning off peripherals that are not in use
+  // Timer1, 2 and 3 are for interrupts (attaching interrupts and detaching them, setting PWM etc)
+  power_spi_disable(); 
+  power_timer1_disable();
+  power_timer2_disable();
+  power_timer3_disable();
+}
+
 void setup()
 {
   Wire.begin();        // join i2c bus (address optional for master)
   Serial.begin(115200);  // start serial for output
   Serial1.begin(115200); //serial for gpio connection between Mega and Rpi
-  
+  pinMode(LED_BUILTIN, OUTPUT);
+
+  powerSavings();
   // Initializing sensors 
   sensorA.initialize();
   sensorB.initialize();
@@ -301,19 +339,20 @@ void setup()
 
   // Testing connection by reading device ID of each sensor
   // Returns false if deviceID not found, Returns true if deviceID is found
-  Serial.println();
+  //Serial.println();
   Serial.println(sensorA.testConnection() ? "Sensor A connected successfully" : "Sensor A failed to connect");
   Serial.println(sensorB.testConnection() ? "Sensor B connected successfully" : "Sensor B failed to connect");
   Serial.println(sensorC.testConnection() ? "Sensor C connected successfully" : "Sensor C failed to connect");
   
-  calibrateSensors();
-  //handshake();
+  // calibrateSensors();
+  handshake();
   xTaskCreate(mainTask, "Main Task", STACK_SIZE, (void *)NULL, 2, NULL);
 } 
+
+
 
 
 void loop()
 {  
 }
- 
 
